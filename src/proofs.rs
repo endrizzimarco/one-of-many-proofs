@@ -39,7 +39,7 @@ pub struct BitProof {
     A: RistrettoPoint,
     C: RistrettoPoint,
     D: RistrettoPoint,
-    f1_j: Vec<Scalar>,
+    f_j_1: Vec<Vec<Scalar>>,
     z_A: Scalar,
     z_C: Scalar,
 }
@@ -87,12 +87,12 @@ impl ProofGens {
         let mut gens = ProofGens {
             n_bits,
             G: constants::RISTRETTO_BASEPOINT_POINT,
-            H: Vec::with_capacity(2 * n_bits),
+            H: Vec::with_capacity(3 * n_bits),
         };
         gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
             gens.G.compress().as_bytes(),
         ));
-        for i in 1..(2 * n_bits) {
+        for i in 1..(3 * n_bits) {
             gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
                 gens.H[i - 1].compress().as_bytes(),
             ));
@@ -105,7 +105,7 @@ impl ProofGens {
     /// proofs over a set with at most `2^10 = 1024` members. Note, proofs over
     /// smaller sets will be extended by repeating the first member.
     pub fn max_set_size(&self) -> usize {
-        2usize.checked_pow(self.n_bits as u32).unwrap()
+        3usize.checked_pow(self.n_bits as u32).unwrap()
     }
 
     /// Create a pedersen commitment, with value `v` and blinding factor `r`.
@@ -146,7 +146,7 @@ impl ProofGens {
         &self,
         transcript: &mut Transcript,
         l: usize,
-        a_j: &Vec<Scalar>,
+        a_j_1: &Vec<Vec<Scalar>>,
     ) -> ProofResult<(RistrettoPoint, BitProof, Scalar)> {
         if l >= self.max_set_size() {
             return Err(ProofError::IndexOutOfBounds);
@@ -167,7 +167,7 @@ impl ProofGens {
             builder.finalize(&mut thread_rng())
         };
 
-        let b_j_i = (0..2)
+        let b_j_i = (0..3)
             .map(|i| {
                 (0..self.n_bits)
                     .map(|j| Scalar::from(delta(bit(l, j), i) as u32))
@@ -179,8 +179,17 @@ impl ProofGens {
         let r_B = Scalar::random(&mut rng);
         let r_C = Scalar::random(&mut rng);
         let r_D = Scalar::random(&mut rng);
-        let a_j_i = iter::once(a_j.clone())
-            .chain(iter::once(a_j.iter().map(|a| -a).collect()))
+
+        // FIXME: possibly wrong
+        let a_j_0 = -a_j_1.iter().flatten().sum::<Scalar>();
+        // add a_j_0 to first element of every array in a_j_1
+        let a_j_i = a_j_1
+            .clone()
+            .iter_mut()
+            .map(|a_j| {
+                a_j.insert(0, a_j_0);
+                a_j.to_vec()
+            })
             .collect::<Vec<Vec<Scalar>>>();
         let A = a_j_i.iter().flatten().commit(&self, &r_A)?;
         let B = b_j_i.iter().flatten().commit(&self, &r_B)?;
@@ -199,15 +208,17 @@ impl ProofGens {
 
         let x = transcript.challenge_scalar(b"bit-proof-challenge");
 
-        let f1_j = a_j_i[1]
-            .iter()
-            .zip(b_j_i[1].iter())
-            .map(|(a, b)| b * x + a)
-            .collect();
+        let mut f_j_1 = vec![vec![Scalar::default(); b_j_i[0].len()]; b_j_i.len()];
+        for j in 0..b_j_i.len() {
+            for i in 0..b_j_i[0].len() {
+                f_j_1[j][i] = b_j_i[j][i] * x + a_j_i[j][i];
+            }
+        }
+
         let z_A = r_B * x + r_A;
         let z_C = r_C * x + r_D;
 
-        for f in &f1_j {
+        for f in f_j_1.iter().flatten() {
             transcript.append_scalar(b"f1_j", f);
         }
         transcript.append_scalar(b"z_A", &z_A);
@@ -219,7 +230,7 @@ impl ProofGens {
                 A,
                 C,
                 D,
-                f1_j,
+                f_j_1,
                 z_A,
                 z_C,
             },
@@ -260,19 +271,19 @@ impl ProofGens {
 
         let x = transcript.challenge_scalar(b"bit-proof-challenge");
 
-        for f in &proof.f1_j {
+        for f in proof.f_j_1.iter().flatten() {
             transcript.append_scalar(b"f1_j", f);
         }
         transcript.append_scalar(b"z_A", &proof.z_A);
         transcript.append_scalar(b"z_C", &proof.z_C);
 
         // Verify proof size
-        if proof.f1_j.len() != self.n_bits {
+        if proof.f_j_1[1].len() != self.n_bits {
             return Err(ProofError::InvalidProofSize);
         }
 
         // Verify all scalars are canonical
-        for f in &proof.f1_j {
+        for f in proof.f_j_1.iter().flatten() {
             if !f.is_canonical() {
                 return Err(ProofError::InvalidScalar(*f));
             }
@@ -284,10 +295,22 @@ impl ProofGens {
             return Err(ProofError::InvalidScalar(proof.z_C));
         }
 
-        // Inflate f1_j to include reconstructed f0_j vector
-        let f_j_i = iter::once(proof.f1_j.iter().map(|f| x - f).collect())
-            .chain(iter::once(proof.f1_j.clone()))
+        // FIXME: might be wrong!
+        // Inflate f1_j to include reconstructed f0_j vector)
+        let f_j_0 = x - proof.f_j_1.iter().flatten().sum::<Scalar>();
+        // add a_j_0 to first element of every array in a_j_1
+        let f_j_i = proof
+            .f_j_1
+            .clone()
+            .iter_mut()
+            .map(|f_j| {
+                f_j.insert(0, f_j_0);
+                f_j.to_vec()
+            })
             .collect::<Vec<Vec<Scalar>>>();
+
+        println!("n: {:?}", f_j_i.len());
+        println!("m: {:?}", f_j_i[0].len());
 
         // Verify relation R1
         if x * B + proof.A != f_j_i.iter().flatten().commit(&self, &proof.z_A)? {
@@ -515,13 +538,19 @@ where
         let rho_k = (0..gens.n_bits)
             .map(|_| Scalar::random(&mut rng))
             .collect::<Vec<Scalar>>();
-        let a_j = (0..gens.n_bits)
-            .map(|_| Scalar::random(&mut rng))
-            .collect::<Vec<Scalar>>();
-        let a_j_i = iter::once(a_j.clone())
-            .chain(iter::once(a_j.iter().map(|a| -a).collect()))
+        let a_j_1 = (0..gens.n_bits)
+            .map(|_| (0..3).map(|_| Scalar::random(&mut rng)).collect())
             .collect::<Vec<Vec<Scalar>>>();
-
+        let a_j_0 = -a_j_1.iter().flatten().sum::<Scalar>();
+        // add a_j_0 to first element of every array in a_j_1
+        let a_j_i = a_j_1
+            .clone()
+            .iter_mut()
+            .map(|a_j| {
+                a_j.insert(0, a_j_0);
+                a_j.to_vec()
+            })
+            .collect::<Vec<Vec<Scalar>>>();
         let mut G_k = Polynomial::from(
             rho_k
                 .iter()
@@ -548,7 +577,7 @@ where
         }
 
         let (B, bit_proof, x) =
-            gens.commit_bits(&mut transcript.clone(), gray_code(l), &a_j_i[0])?;
+            gens.commit_bits(&mut transcript.clone(), gray_code(l), &a_j_i[1..].to_vec())?; // FIXME:
 
         let z = r * scalar_exp(x, gens.n_bits) - Polynomial::from(rho_k).eval(x).unwrap();
 
@@ -591,10 +620,11 @@ where
 
         // Batch verification strategy inspired by https://eprint.iacr.org/2019/373.pdf
         let mut set_size: usize = 0;
+        // TODO:
         let mut coeff_iters: Vec<SetCoefficientIterator> = proofs
             .iter()
             .zip(x_vec.iter())
-            .map(|(p, x)| SetCoefficientIterator::from_f1_j_and_x(&p.bit_proof.f1_j, &x))
+            .map(|(p, x)| SetCoefficientIterator::from_f1_j_and_x(&p.bit_proof.f_j_1, &x))
             .collect();
         let O = offsets
             .iter()
@@ -669,6 +699,8 @@ struct SetCoefficientIterator {
     f0_inv_j: Vec<Scalar>,
     f1_j: Vec<Scalar>,
     f1_inv_j: Vec<Scalar>,
+    f2_j: Vec<Scalar>,
+    f2_inv_j: Vec<Scalar>,
     n: usize,
     max_n: usize,
     nth_code: usize,
@@ -676,15 +708,15 @@ struct SetCoefficientIterator {
 }
 
 impl SetCoefficientIterator {
-    fn from_f1_j_and_x(f1_j: &Vec<Scalar>, x: &Scalar) -> SetCoefficientIterator {
-        let f1_j = f1_j.clone();
-        let mut f1_inv_j = f1_j.clone();
+    fn from_f1_j_and_x(f1_j: &Vec<Vec<Scalar>>, x: &Scalar) -> SetCoefficientIterator {
+        let f1_j = f1_j[0].clone();
+        let mut f1_inv_j = f1_j[0].clone();
         Scalar::batch_invert(&mut f1_inv_j[..]);
         let f0_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1).collect();
         let mut f0_inv_j = f0_j.clone();
         Scalar::batch_invert(&mut f0_inv_j[..]);
         let n = 0;
-        let max_n = 2usize.checked_pow(f1_j.len() as u32).unwrap();
+        let max_n = 3usize.checked_pow(f1_j.len() as u32).unwrap();
         let nth_code = gray_code(n);
         let nth_coeff = f0_j.iter().product();
         SetCoefficientIterator {
@@ -728,7 +760,7 @@ impl Iterator for SetCoefficientIterator {
 }
 
 fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
-    assert!(a_j_i.len() == 2); // Must have two rows of random scalars
+    assert!(a_j_i.len() == 3); // Must have two rows of random scalars
     assert!(a_j_i[0].len() == a_j_i[1].len()); // Make sure each row is the same length
     let n_bits = a_j_i[0].len();
 

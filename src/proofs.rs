@@ -1,8 +1,7 @@
 #![allow(non_snake_case)]
 use crate::errors::{ProofError, ProofResult};
-use crate::gray_code::gray_code;
 use crate::transcript::TranscriptProtocol;
-use core::iter::{self, Iterator};
+use core::iter::Iterator;
 use core::ops::Mul;
 use core::slice;
 use curve25519_dalek::constants;
@@ -718,85 +717,6 @@ where
     }
 }
 
-// Iterate over each coefficient according to optimized Gray code permutations of each previous
-// coefficient.
-#[derive(Clone)]
-struct SetCoefficientIterator {
-    f_j: Vec<Scalar>,
-    f0_inv_j: Vec<Scalar>,
-    f1_j: Vec<Scalar>,
-    f1_inv_j: Vec<Scalar>,
-    n: usize,
-    max_n: usize,
-    nth_code: usize,
-    nth_coeff: Scalar,
-}
-
-impl SetCoefficientIterator {
-    fn from_f1_j_and_x(f1_j: &Vec<Vec<Scalar>>, x: &Scalar) -> SetCoefficientIterator {
-        let f1_total = f1_j.iter().flatten().sum::<Scalar>();
-        let f_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1_total).collect();
-        let mut f0_inv_j = f_j.clone();
-        Scalar::batch_invert(&mut f0_inv_j[..]);
-        // FIXME: defo wrong
-        let f1_j = f1_j
-            .clone()
-            .iter()
-            .cloned()
-            .flatten()
-            .collect::<Vec<Scalar>>();
-        let mut f1_inv_j = f1_j.clone();
-        Scalar::batch_invert(&mut f1_inv_j[..]);
-        // let f1_j = f1_j[0].clone();
-        // let mut f1_inv_j = f1_j[0].clone();
-        // Scalar::batch_invert(&mut f1_inv_j[..]);
-        // let f_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1).collect();
-        // let mut f0_inv_j = f_j.clone();
-        // Scalar::batch_invert(&mut f0_inv_j[..]);
-        let n = 0;
-        let max_n = N.checked_pow(5u32).unwrap();
-        let nth_code = gray_code(n);
-        let nth_coeff = f_j.iter().product();
-        SetCoefficientIterator {
-            f_j,
-            f0_inv_j,
-            f1_j,
-            f1_inv_j,
-            n,
-            max_n,
-            nth_code,
-            nth_coeff,
-        }
-    }
-}
-
-impl Iterator for SetCoefficientIterator {
-    type Item = Scalar;
-
-    #[inline]
-    fn next(&mut self) -> Option<Scalar> {
-        if self.n < self.max_n {
-            let next_coeff = self.nth_coeff;
-            self.n += 1;
-            if self.n < self.max_n {
-                let next_code = gray_code(self.n);
-                let j = (self.nth_code ^ next_code).trailing_zeros() as usize;
-                if self.nth_code > next_code {
-                    self.nth_coeff *= self.f1_inv_j[j];
-                    self.nth_coeff *= self.f_j[j];
-                } else {
-                    self.nth_coeff *= self.f0_inv_j[j];
-                    self.nth_coeff *= self.f1_j[j];
-                }
-                self.nth_code = next_code;
-            }
-            Some(next_coeff)
-        } else {
-            None
-        }
-    }
-}
-
 fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
     assert!(a_j_i.len() == N); // Must have two rows of random scalars
     assert!(a_j_i[0].len() == a_j_i[1].len()); // Make sure each row is the same length
@@ -862,35 +782,6 @@ mod tests {
             ProofGens::new(0xffffffff).unwrap_err(),
             ProofError::SetIsTooLarge
         );
-    }
-
-    // #[test]
-    fn gens_set_size() {
-        // Not a lot can go wrong here, but test some corner cases to catch
-        // potential issues between architectures
-
-        // 8 bit corners
-        let gens = ProofGens::new(7).unwrap();
-        assert_eq!(gens.max_set_size(), 128);
-        let gens = ProofGens::new(8).unwrap();
-        assert_eq!(gens.max_set_size(), 256);
-        let gens = ProofGens::new(9).unwrap();
-        assert_eq!(gens.max_set_size(), 512);
-
-        // 16 bit corners
-        let gens = ProofGens::new(15).unwrap();
-        assert_eq!(gens.max_set_size(), 32768);
-        let gens = ProofGens::new(16).unwrap();
-        assert_eq!(gens.max_set_size(), 65536);
-        let gens = ProofGens::new(17).unwrap();
-        assert_eq!(gens.max_set_size(), 131072);
-
-        // 32 bit corners
-        let gens = ProofGens::new(31).unwrap();
-        assert_eq!(gens.max_set_size(), 2147483648);
-        let gens = ProofGens::new(32).unwrap();
-        assert_eq!(gens.max_set_size(), 4294967296);
-        assert!(ProofGens::new(33).is_err());
     }
 
     #[test]

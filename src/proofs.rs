@@ -14,7 +14,7 @@ use polynomials::Polynomial;
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
 
-const N: usize = 5;
+const N: usize = 2;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -171,7 +171,7 @@ impl ProofGens {
         let b_j_i = (0..N)
             .map(|i| {
                 (0..self.n_bits)
-                    .map(|j| Scalar::from(delta(bit(l, j), i) as u32))
+                    .map(|j| Scalar::from(delta(bit(l, j, N), i) as u32))
                     .collect()
             })
             .collect::<Vec<Vec<Scalar>>>();
@@ -275,7 +275,7 @@ impl ProofGens {
         transcript.append_scalar(b"z_C", &proof.z_C);
 
         // Verify proof size
-        if proof.f_j_1[1].len() != self.n_bits {
+        if proof.f_j_1[0].len() != self.n_bits {
             return Err(ProofError::InvalidProofSize);
         }
 
@@ -292,7 +292,7 @@ impl ProofGens {
             return Err(ProofError::InvalidScalar(proof.z_C));
         }
 
-        // Inflate f1_j to include reconstructed f0_j vector
+        // Inflate f1_j to include reconstructed f_j vector
         let f_j_1 = &proof.f_j_1;
         let mut f_j_i = vec![vec![Scalar::default(); self.n_bits]; N];
         for j in 0..self.n_bits {
@@ -547,10 +547,11 @@ where
                 .collect::<Vec<RistrettoPoint>>(),
         );
         let mut i = 0;
+        // why is this clone needed?
         self.clone()
             .map(|&C_i| if let Some(O) = offset { C_i - O } else { C_i })
             .for_each(|C_i| {
-                let p_i = compute_p_i(gray_code(i), gray_code(l), &a_j_i);
+                let p_i = compute_p_i(i, l, &a_j_i);
                 p_i.iter().enumerate().for_each(|(k, p)| {
                     G_k[k] += p * C_i;
                 });
@@ -565,8 +566,7 @@ where
             transcript.validate_and_append_point(b"G_k", &G_k[k].compress())?;
         }
 
-        let (B, bit_proof, x) =
-            gens.commit_bits(&mut transcript.clone(), gray_code(l), &a_j_i[1..].to_vec())?; // FIXME:
+        let (B, bit_proof, x) = gens.commit_bits(&mut transcript.clone(), l, &a_j_1)?;
 
         let z = r * scalar_exp(x, gens.n_bits) - Polynomial::from(rho_k).eval(x).unwrap();
 
@@ -607,36 +607,66 @@ where
             x_vec.push(gens.verify_bits(&mut t, &p.B, &p.bit_proof)?);
         }
 
-        // Batch verification strategy inspired by https://eprint.iacr.org/2019/373.pdf
-        let mut set_size: usize = 0;
-        // TODO:
-        let mut coeff_iters: Vec<SetCoefficientIterator> = proofs
-            .iter()
-            .zip(x_vec.iter())
-            .map(|(p, x)| SetCoefficientIterator::from_f1_j_and_x(&p.bit_proof.f_j_1, &x))
-            .collect();
+        // Inflate f1_j to include reconstructed f_j vector
+        // FIXME: crimes against humanity
+
+        // create 3d array: [proof, n, m]
+        let mut f_p_j_i = vec![
+            vec![vec![Scalar::default(); proofs[0].bit_proof.f_j_1[0].len()]; N];
+            proofs.len()
+        ];
+        for k in 0..proofs.len() {
+            let f_j_1 = &proofs[k].bit_proof.f_j_1;
+            let mut f_j_i = vec![vec![Scalar::default(); f_j_1[0].len()]; N];
+            for j in 0..f_j_1[0].len() {
+                f_j_i[0][j] = x_vec[k] - f_j_1.iter().map(|f| f[j]).sum::<Scalar>();
+                for i in 0..f_j_1.len() {
+                    f_j_i[i + 1][j] = f_j_1[i][j];
+                }
+            }
+            f_p_j_i[k] = f_j_i;
+        }
+
+        // Using batch verification strategy from: https://eprint.iacr.org/2019/373.pdf
+        let mut set_size = 0;
+
         let O = offsets
             .iter()
-            .zip(coeff_iters.clone().iter_mut())
-            .filter_map(|(O, coeff_iter)| {
+            .zip(proofs.iter().zip(f_p_j_i.iter()))
+            .filter_map(|(O, (p, f_j_i))| {
                 if let Some(O) = O {
-                    Some((O, coeff_iter))
+                    Some((O, (p, f_j_i)))
                 } else {
                     None
                 }
             })
-            .map(|(&O, coeff_iter)| O * coeff_iter.sum::<Scalar>())
-            .sum::<RistrettoPoint>();
-        let C = self
-            .clone()
-            .map(|C_i| {
-                set_size += 1;
-                C_i * coeff_iters
-                    .iter_mut()
-                    .filter_map(|coeff_iter| coeff_iter.next())
+            .map(|(&O, (_, f_j_i))| {
+                O * (0..gens.max_set_size())
+                    .map(|i| {
+                        (0..gens.n_bits)
+                            .map(|j| f_j_i[bit(i, j, N)][j])
+                            .product::<Scalar>()
+                    })
                     .sum::<Scalar>()
             })
             .sum::<RistrettoPoint>();
+
+        let mut C = RistrettoPoint::default();
+
+        for (i, &C_i) in self.clone().enumerate() {
+            set_size += 1;
+            let coeff: Scalar = proofs
+                .iter()
+                .enumerate()
+                .map(|(k, _)| {
+                    (0..gens.n_bits)
+                        .map(|j| f_p_j_i[k][bit(i, j, N)][j])
+                        .product::<Scalar>()
+                })
+                .sum();
+            C += C_i * coeff;
+        }
+
         if set_size < gens.max_set_size() {
             return Err(ProofError::SetIsTooSmall);
         } else if set_size > gens.max_set_size() {
@@ -684,7 +714,7 @@ where
 // coefficient.
 #[derive(Clone)]
 struct SetCoefficientIterator {
-    f0_j: Vec<Scalar>,
+    f_j: Vec<Scalar>,
     f0_inv_j: Vec<Scalar>,
     f1_j: Vec<Scalar>,
     f1_inv_j: Vec<Scalar>,
@@ -697,8 +727,8 @@ struct SetCoefficientIterator {
 impl SetCoefficientIterator {
     fn from_f1_j_and_x(f1_j: &Vec<Vec<Scalar>>, x: &Scalar) -> SetCoefficientIterator {
         let f1_total = f1_j.iter().flatten().sum::<Scalar>();
-        let f0_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1_total).collect();
-        let mut f0_inv_j = f0_j.clone();
+        let f_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1_total).collect();
+        let mut f0_inv_j = f_j.clone();
         Scalar::batch_invert(&mut f0_inv_j[..]);
         // FIXME: defo wrong
         let f1_j = f1_j
@@ -712,15 +742,15 @@ impl SetCoefficientIterator {
         // let f1_j = f1_j[0].clone();
         // let mut f1_inv_j = f1_j[0].clone();
         // Scalar::batch_invert(&mut f1_inv_j[..]);
-        // let f0_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1).collect();
-        // let mut f0_inv_j = f0_j.clone();
+        // let f_j: Vec<Scalar> = f1_j.iter().map(|f1| x - f1).collect();
+        // let mut f0_inv_j = f_j.clone();
         // Scalar::batch_invert(&mut f0_inv_j[..]);
         let n = 0;
-        let max_n = N.checked_pow(f1_j.len() as u32).unwrap();
+        let max_n = N.checked_pow(5u32).unwrap();
         let nth_code = gray_code(n);
-        let nth_coeff = f0_j.iter().product();
+        let nth_coeff = f_j.iter().product();
         SetCoefficientIterator {
-            f0_j,
+            f_j,
             f0_inv_j,
             f1_j,
             f1_inv_j,
@@ -745,7 +775,7 @@ impl Iterator for SetCoefficientIterator {
                 let j = (self.nth_code ^ next_code).trailing_zeros() as usize;
                 if self.nth_code > next_code {
                     self.nth_coeff *= self.f1_inv_j[j];
-                    self.nth_coeff *= self.f0_j[j];
+                    self.nth_coeff *= self.f_j[j];
                 } else {
                     self.nth_coeff *= self.f0_inv_j[j];
                     self.nth_coeff *= self.f1_j[j];
@@ -771,8 +801,8 @@ fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
     // Multiply each polynomial
     for j in 0..n_bits {
         let mut f = Polynomial::new();
-        f.push(a_j_i[bit(i, j)][j]);
-        if 0 != delta(bit(l, j), bit(i, j)) {
+        f.push(a_j_i[bit(i, j, N)][j]);
+        if 0 != delta(bit(l, j, N), bit(i, j, N)) {
             f.push(Scalar::one());
         }
         p *= f;
@@ -792,8 +822,8 @@ fn scalar_exp(base: Scalar, exp: usize) -> Scalar {
     res
 }
 
-fn bit(v: usize, j: usize) -> usize {
-    (v >> j) & 1
+fn bit(v: usize, j: usize, n: usize) -> usize {
+    (v / n.pow(j as u32)) % n
 }
 
 fn delta(a: usize, b: usize) -> usize {
@@ -884,7 +914,7 @@ mod tests {
         );
     }
 
-    // #[test]
+    #[test]
     fn prove_single() {
         // Set up proof generators
         let gens = ProofGens::new(5).unwrap();
@@ -962,7 +992,7 @@ mod tests {
         set.push(removed);
     }
 
-    // #[test]
+    #[test]
     fn prove_single_with_offset() {
         // Set up proof generators
         let gens = ProofGens::new(5).unwrap();
@@ -1086,7 +1116,7 @@ mod tests {
         set.push(removed);
     }
 
-    // #[test]
+    #[test]
     fn prove_batch() {
         // Set up proof generators
         let gens = ProofGens::new(5).unwrap();
@@ -1141,7 +1171,7 @@ mod tests {
             .is_ok());
     }
 
-    // #[test]
+    #[test]
     fn serde() {
         // Set up proof generators
         let gens = ProofGens::new(5).unwrap();

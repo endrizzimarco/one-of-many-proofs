@@ -5,7 +5,7 @@ use core::iter::Iterator;
 use core::ops::Mul;
 use core::slice;
 use curve25519_dalek::constants;
-use curve25519_dalek::ristretto::RistrettoPoint;
+use curve25519_dalek::ristretto::{RistrettoBasepointTable, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{IsIdentity, MultiscalarMul};
 use merlin::Transcript;
@@ -13,6 +13,7 @@ use polynomials::Polynomial;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
+use std::fmt;
 use std::time::{Duration, Instant};
 
 const N: usize = 2;
@@ -22,14 +23,23 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
+#[derive(Clone)]
+pub struct RistrettoBasepointTableWrapper(RistrettoBasepointTable);
+
+impl fmt::Debug for RistrettoBasepointTableWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("RistrettoBasepointTableWrapper").finish()
+    }
+}
+
 /// A collection of generator points that can be used to compute various proofs
 /// in this module. To create an instance of [`ProofGens`] it is recommended to
 /// call ProofGens::new(`n`), where `n` is the number of bits to be used in
 /// proofs and verifications.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProofGens {
     pub n_bits: usize,
-    G: RistrettoPoint,
+    G: RistrettoBasepointTableWrapper,
     H: Vec<RistrettoPoint>,
 }
 
@@ -88,11 +98,11 @@ impl ProofGens {
         // H[2n-1] = hash(H[2n-2])
         let mut gens = ProofGens {
             n_bits,
-            G: constants::RISTRETTO_BASEPOINT_POINT,
+            G: RistrettoBasepointTableWrapper(constants::RISTRETTO_BASEPOINT_TABLE),
             H: Vec::with_capacity(N * n_bits),
         };
         gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
-            gens.G.compress().as_bytes(),
+            gens.G.0.basepoint().compress().as_bytes(),
         ));
         for i in 1..(N * n_bits) {
             gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
@@ -112,7 +122,7 @@ impl ProofGens {
 
     /// Create a pedersen commitment, with value `v` and blinding factor `r`.
     pub fn commit(&self, v: &Scalar, r: &Scalar) -> ProofResult<RistrettoPoint> {
-        Ok(v * self.H[0] + r * self.G)
+        Ok(v * self.H[0] + &self.G.0 * r)
     }
 
     /// Commit to the bits in `l`, and generate the corresponding proof.
@@ -302,6 +312,7 @@ impl ProofGens {
                 f_j_i[i + 1][j] = f_j_1[i][j];
             }
         }
+        // let now = Instant::now();
 
         // Verify relation R1
         if x * B + proof.A != f_j_i.iter().flatten().commit(&self, &proof.z_A)? {
@@ -315,6 +326,8 @@ impl ProofGens {
         if x * proof.C + proof.D != r1 {
             return Err(ProofError::VerificationFailed);
         }
+        // let elapsed = now.elapsed();
+        // println!("Elapsed: {:.2?}", elapsed);
         Ok(x)
     }
 }
@@ -703,17 +716,20 @@ trait VectorCommit {
 impl<I, T> VectorCommit for I
 where
     I: Iterator<Item = T>,
-    T: Mul<RistrettoPoint, Output = RistrettoPoint>,
+    T: core::borrow::Borrow<curve25519_dalek::scalar::Scalar>
+        + Mul<RistrettoPoint, Output = RistrettoPoint>,
 {
     fn commit(self, gens: &ProofGens, r: &Scalar) -> ProofResult<RistrettoPoint> {
-        let mut c = r * gens.G;
+        let c = r * &gens.G.0;
+        let mut scalars = Vec::with_capacity(gens.H.len());
         for (i, v) in self.enumerate() {
             if i >= gens.H.len() {
                 return Err(ProofError::SetIsTooLarge);
             }
-            c += v * gens.H[i];
+            scalars.push(v);
         }
-        Ok(c)
+        let c_i = RistrettoPoint::multiscalar_mul(scalars, gens.H.as_slice());
+        Ok(c + c_i)
     }
 }
 

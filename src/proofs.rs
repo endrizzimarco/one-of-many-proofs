@@ -8,11 +8,13 @@ use core::slice;
 use curve25519_dalek::constants;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::IsIdentity;
+use curve25519_dalek::traits::{IsIdentity, MultiscalarMul};
 use merlin::Transcript;
 use polynomials::Polynomial;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
+use std::time::{Duration, Instant};
 
 const N: usize = 2;
 #[cfg(not(feature = "std"))]
@@ -594,28 +596,28 @@ where
             return Err(ProofError::VerificationFailed);
         }
 
-        let mut x_vec = Vec::new();
-        for p in proofs {
-            if !p.z.is_canonical() {
-                return Err(ProofError::InvalidScalar(p.z));
-            }
+        let x_vec: Vec<_> = proofs
+            .par_iter()
+            .map(|p| {
+                if !p.z.is_canonical() {
+                    return Err(ProofError::InvalidScalar(p.z));
+                }
 
-            let mut t = transcript.clone();
-            for k in 0..gens.n_bits - 1 {
-                t.validate_and_append_point(b"G_k", &p.G_k[k].compress())?;
-            }
-            x_vec.push(gens.verify_bits(&mut t, &p.B, &p.bit_proof)?);
-        }
+                let mut t = transcript.clone();
+                for k in 0..gens.n_bits - 1 {
+                    t.validate_and_append_point(b"G_k", &p.G_k[k].compress())?;
+                }
+                gens.verify_bits(&mut t, &p.B, &p.bit_proof)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Inflate f1_j to include reconstructed f_j vector
-        // FIXME: crimes against humanity
-
-        // create 3d array: [proof, n, m]
+        // create 3d array: [proof, n, m] <- this is a cry for help
         let mut f_p_j_i = vec![
             vec![vec![Scalar::default(); proofs[0].bit_proof.f_j_1[0].len()]; N];
             proofs.len()
         ];
         for k in 0..proofs.len() {
+            // Inflate f1_j to include reconstructed f_j vector
             let f_j_1 = &proofs[k].bit_proof.f_j_1;
             let mut f_j_i = vec![vec![Scalar::default(); f_j_1[0].len()]; N];
             for j in 0..f_j_1[0].len() {
@@ -630,42 +632,49 @@ where
         // Using batch verification strategy from: https://eprint.iacr.org/2019/373.pdf
         let mut set_size = 0;
 
-        let O = offsets
-            .iter()
-            .zip(proofs.iter().zip(f_p_j_i.iter()))
-            .filter_map(|(O, (p, f_j_i))| {
-                if let Some(O) = O {
-                    Some((O, (p, f_j_i)))
-                } else {
-                    None
-                }
-            })
-            .map(|(&O, (_, f_j_i))| {
-                O * (0..gens.max_set_size())
-                    .map(|i| {
+        let coeffs = self
+            .clone()
+            .enumerate()
+            .map(|(i, _)| {
+                set_size += 1;
+                proofs
+                    .par_iter()
+                    .enumerate()
+                    .map(|(p, _)| {
                         (0..gens.n_bits)
-                            .map(|j| f_j_i[bit(i, j, N)][j])
+                            .map(|j| f_p_j_i[p][bit(i, j, N)][j])
                             .product::<Scalar>()
                     })
-                    .sum::<Scalar>()
+                    .collect::<Vec<Scalar>>()
             })
+            .collect::<Vec<Vec<Scalar>>>();
+
+        let horizontal_sum = coeffs
+            .par_iter()
+            .map(|vec| vec.par_iter().sum::<Scalar>())
+            .collect::<Vec<Scalar>>();
+
+        let vertical_sum = (0..coeffs[0].len())
+            .into_par_iter()
+            .map(|i| {
+                coeffs
+                    .par_iter()
+                    .map(|row| row[i])
+                    .reduce(|| Scalar::zero(), |a, b| a + b)
+            })
+            .collect::<Vec<Scalar>>();
+
+        let O = offsets
+            .par_iter()
+            .filter_map(|O| if let Some(O) = O { Some(O) } else { None })
+            .map(|&O| O)
+            .collect::<Vec<_>>()
+            .par_iter()
+            .enumerate()
+            .map(|(k, &O)| O * vertical_sum[k])
             .sum::<RistrettoPoint>();
 
-        let mut C = RistrettoPoint::default();
-
-        for (i, &C_i) in self.clone().enumerate() {
-            set_size += 1;
-            let coeff: Scalar = proofs
-                .iter()
-                .enumerate()
-                .map(|(k, _)| {
-                    (0..gens.n_bits)
-                        .map(|j| f_p_j_i[k][bit(i, j, N)][j])
-                        .product::<Scalar>()
-                })
-                .sum();
-            C += C_i * coeff;
-        }
+        let C = RistrettoPoint::multiscalar_mul(horizontal_sum, self.clone());
 
         if set_size < gens.max_set_size() {
             return Err(ProofError::SetIsTooSmall);
@@ -674,8 +683,8 @@ where
         }
         let E = gens.commit(&Scalar::zero(), &proofs.iter().map(|p| p.z).sum())?;
         let G = proofs
-            .iter()
-            .zip(x_vec.iter())
+            .par_iter()
+            .zip(x_vec.par_iter())
             .map(|(p, &x)| p.G_k.eval(x).unwrap())
             .sum::<RistrettoPoint>();
         if C.is_identity() || E.is_identity() || G.is_identity() {
@@ -684,7 +693,6 @@ where
         if C != E + G + O {
             return Err(ProofError::VerificationFailed);
         }
-
         Ok(())
     }
 }

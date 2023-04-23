@@ -60,22 +60,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let mut verifier_transcript = Transcript::new(b"doctest example");
-    c.bench_function("Batch verify 20", |b| {
-        b.iter(|| {
-            let mut t = verifier_transcript.clone();
-            assert!(set
-                .iter()
-                .verify_batch_with_offsets(
-                    black_box(&gens),
-                    black_box(&mut t),
-                    black_box(&proofs[..20]),
-                    black_box(offsets.as_slice())
-                )
-                .is_ok());
-        })
-    });
-
-    let mut verifier_transcript = Transcript::new(b"doctest example");
     c.bench_function("Batch verify 40", |b| {
         b.iter(|| {
             let mut t = verifier_transcript.clone();

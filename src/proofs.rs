@@ -14,9 +14,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
 use std::fmt;
-use std::time::{Duration, Instant};
 
-const N: usize = 2;
+const N: usize = 4;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -609,7 +608,7 @@ where
         }
 
         let x_vec: Vec<_> = proofs
-            .par_iter()
+            .iter()
             .map(|p| {
                 if !p.z.is_canonical() {
                     return Err(ProofError::InvalidScalar(p.z));
@@ -650,7 +649,7 @@ where
             .map(|(i, _)| {
                 set_size += 1;
                 proofs
-                    .par_iter()
+                    .iter()
                     .enumerate()
                     .map(|(p, _)| {
                         (0..gens.n_bits)
@@ -663,11 +662,11 @@ where
 
         let horizontal_sum = coeffs
             .par_iter()
-            .map(|vec| vec.par_iter().sum::<Scalar>())
+            .map(|vec| vec.iter().sum::<Scalar>())
             .collect::<Vec<Scalar>>();
 
         let vertical_sum = (0..coeffs[0].len())
-            .into_par_iter()
+            .into_iter()
             .map(|i| {
                 coeffs
                     .par_iter()
@@ -677,11 +676,11 @@ where
             .collect::<Vec<Scalar>>();
 
         let O = offsets
-            .par_iter()
+            .iter()
             .filter_map(|O| if let Some(O) = O { Some(O) } else { None })
             .map(|&O| O)
             .collect::<Vec<_>>()
-            .par_iter()
+            .iter()
             .enumerate()
             .map(|(k, &O)| O * vertical_sum[k])
             .sum::<RistrettoPoint>();
@@ -695,8 +694,8 @@ where
         }
         let E = gens.commit(&Scalar::zero(), &proofs.iter().map(|p| p.z).sum())?;
         let G = proofs
-            .par_iter()
-            .zip(x_vec.par_iter())
+            .iter()
+            .zip(x_vec.iter())
             .map(|(p, &x)| p.G_k.eval(x).unwrap())
             .sum::<RistrettoPoint>();
         if C.is_identity() || E.is_identity() || G.is_identity() {

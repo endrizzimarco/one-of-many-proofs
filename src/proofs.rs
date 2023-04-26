@@ -145,9 +145,13 @@ impl ProofGens {
     ///
     /// // The proof requires us to provide random noise values. For secure
     /// // applications, be sure to use a more secure RNG.
-    /// let a_j = (0..gens.n_bits)
-    ///     .map(|_| Scalar::random(&mut OsRng))
-    ///     .collect::<Vec<Scalar>>();
+    /// # let a_j = (0..1)
+    /// # .map(|_| {
+    /// #     (0..gens.n_bits)
+    /// #         .map(|_| Scalar::random(&mut OsRng))
+    /// #         .collect()
+    /// # })
+    /// # .collect::<Vec<Vec<Scalar>>>();
     ///
     /// // Create a new transcript and compute the bit commitment and its proof
     /// let mut t = Transcript::new(b"doctest example");
@@ -254,9 +258,13 @@ impl ProofGens {
     /// # use merlin::Transcript;
     /// # let gens = ProofGens::new(5).unwrap();
     /// # let l = 7; // Some index within the range 0 <= `l` <= 2^5
-    /// # let a_j = (0..gens.n_bits)
-    /// #    .map(|_| Scalar::random(&mut OsRng))
-    /// #    .collect::<Vec<Scalar>>();
+    /// # let a_j = (0..1)
+    /// # .map(|_| {
+    /// #   (0..gens.n_bits)
+    /// #        .map(|_| Scalar::random(&mut OsRng))
+    /// #        .collect()
+    /// # })
+    /// # .collect::<Vec<Vec<Scalar>>>();
     /// # let mut t = Transcript::new(b"doctest example");
     /// # let (B, proof, _) = gens.commit_bits(&mut t, l, &a_j).unwrap();
     /// // Create new transcript and verify a bit commitment against its proof
@@ -311,7 +319,6 @@ impl ProofGens {
                 f_j_i[i + 1][j] = f_j_1[i][j];
             }
         }
-        // let now = Instant::now();
 
         // Verify relation R1
         if x * B + proof.A != f_j_i.iter().flatten().commit(&self, &proof.z_A)? {
@@ -325,8 +332,6 @@ impl ProofGens {
         if x * proof.C + proof.D != r1 {
             return Err(ProofError::VerificationFailed);
         }
-        // let elapsed = now.elapsed();
-        // println!("Elapsed: {:.2?}", elapsed);
         Ok(x)
     }
 }
@@ -367,11 +372,10 @@ pub trait OneOfManyProofs {
     //!
     //! // Compute a `OneOfMany` membership proof for this commitment
     //! let mut t = Transcript::new(b"OneOfMany-Test");
-    //! let proof = set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap();
+    //! let proof = set.prove(&gens, &mut t.clone(), l, &r).unwrap();
     //!
     //! // Verify this membership proof, without any knowledge of `l` or `r`.
     //! assert!(set
-    //!     .iter()
     //!     .verify(&gens, &mut t.clone(), &proof)
     //!     .is_ok());
     //! ```
@@ -423,11 +427,10 @@ pub trait OneOfManyProofs {
     //!
     //! // Compute a `OneOfMany` membership proof for this commitment
     //! let mut t = Transcript::new(b"OneOfMany-Test");
-    //! let proof = set.iter().prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
+    //! let proof = set.prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
     //!
     //! // Verify this membership proof, without any knowledge of `l` or `r`.
     //! assert!(set
-    //!     .iter()
     //!     .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
     //!     .is_ok());
     //! ```
@@ -506,10 +509,7 @@ pub trait OneOfManyProofs {
     ) -> ProofResult<()>;
 }
 
-impl<'a, I> OneOfManyProofs for I
-where
-    I: Iterator<Item = &'a RistrettoPoint> + Clone,
-{
+impl OneOfManyProofs for Vec<RistrettoPoint> {
     fn prove_with_offset(
         &self,
         gens: &ProofGens,
@@ -561,11 +561,11 @@ where
         );
 
         let points_minus_offset = self
-            .clone()
+            .iter()
             .map(|&C_i| if let Some(O) = offset { C_i - O } else { C_i })
             .collect::<Vec<RistrettoPoint>>();
 
-        let p_i_k = (0..gens.max_set_size())
+        let p_i_k = (0..self.len())
             .map(|i| compute_p_i(i, l, &a_j_i))
             .collect::<Vec<Vec<Scalar>>>();
         if p_i_k.len() < gens.max_set_size() {
@@ -648,13 +648,10 @@ where
         }
 
         // Using batch verification strategy from: https://eprint.iacr.org/2019/373.pdf
-        let mut set_size = 0;
-
         let coeffs = self
-            .clone()
+            .par_iter()
             .enumerate()
             .map(|(i, _)| {
-                set_size += 1;
                 proofs
                     .iter()
                     .enumerate()
@@ -692,13 +689,13 @@ where
             .map(|(k, &O)| O * vertical_sum[k])
             .sum::<RistrettoPoint>();
 
-        let C = RistrettoPoint::multiscalar_mul(horizontal_sum, self.clone());
-
-        if set_size < gens.max_set_size() {
+        if self.len() < gens.max_set_size() {
             return Err(ProofError::SetIsTooSmall);
-        } else if set_size > gens.max_set_size() {
+        } else if self.len() > gens.max_set_size() {
             return Err(ProofError::SetIsTooLarge);
         }
+
+        let C = RistrettoPoint::multiscalar_mul(horizontal_sum, self);
         let E = gens.commit(&Scalar::zero(), &proofs.iter().map(|p| p.z).sum())?;
         let G = proofs
             .iter()
@@ -867,13 +864,12 @@ mod tests {
         let t = Transcript::new(b"OneOfMany-Test");
 
         // Compute a `OneOfMany` membership proof for this commitment
-        let proof = set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap();
-        assert!(set.iter().verify(&gens, &mut t.clone(), &proof).is_ok());
+        let proof = set.prove(&gens, &mut t.clone(), l, &r).unwrap();
+        assert!(set.verify(&gens, &mut t.clone(), &proof).is_ok());
 
         // Check error if index out of bounds
         assert_eq!(
-            set.iter()
-                .prove(&gens, &mut t.clone(), gens.max_set_size(), &r)
+            set.prove(&gens, &mut t.clone(), gens.max_set_size(), &r)
                 .unwrap_err(),
             ProofError::IndexOutOfBounds
         );
@@ -881,14 +877,14 @@ mod tests {
         // Prove should fail if set too small or too large
         let removed = set.pop().unwrap();
         assert_eq!(
-            set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap_err(),
+            set.prove(&gens, &mut t.clone(), l, &r).unwrap_err(),
             ProofError::SetIsTooSmall
         );
         set.push(RistrettoPoint::random(&mut OsRng));
-        assert!(set.iter().prove(&gens, &mut t.clone(), l, &r).is_ok()); // Ok!
+        assert!(set.prove(&gens, &mut t.clone(), l, &r).is_ok()); // Ok!
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap_err(),
+            set.prove(&gens, &mut t.clone(), l, &r).unwrap_err(),
             ProofError::SetIsTooLarge
         );
 
@@ -900,23 +896,17 @@ mod tests {
         // Verify should fail if set has been modified
         let removed = set.pop().unwrap();
         assert_eq!(
-            set.iter()
-                .verify(&gens, &mut t.clone(), &proof)
-                .unwrap_err(),
+            set.verify(&gens, &mut t.clone(), &proof).unwrap_err(),
             ProofError::SetIsTooSmall
         );
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter()
-                .verify(&gens, &mut t.clone(), &proof)
-                .unwrap_err(),
+            set.verify(&gens, &mut t.clone(), &proof).unwrap_err(),
             ProofError::VerificationFailed
         );
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter()
-                .verify(&gens, &mut t.clone(), &proof)
-                .unwrap_err(),
+            set.verify(&gens, &mut t.clone(), &proof).unwrap_err(),
             ProofError::SetIsTooLarge
         );
 
@@ -947,11 +937,9 @@ mod tests {
 
         // First test with no offest
         let proof = set
-            .iter()
             .prove_with_offset(&gens, &mut t.clone(), l, &r, None)
             .unwrap();
         assert!(set
-            .iter()
             .verify_with_offset(&gens, &mut t.clone(), &proof, None)
             .is_ok());
 
@@ -966,31 +954,27 @@ mod tests {
 
         // Now test with the valid offset and commitment to non-zero
         let proof = set
-            .iter()
             .prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new))
             .unwrap();
         assert!(set
-            .iter()
             .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
             .is_ok());
 
         // Now test with the incorrect offset
         assert_eq!(
-            set.iter()
-                .verify_with_offset(
-                    &gens,
-                    &mut t.clone(),
-                    &proof,
-                    Some(&RistrettoPoint::random(&mut OsRng))
-                )
-                .unwrap_err(),
+            set.verify_with_offset(
+                &gens,
+                &mut t.clone(),
+                &proof,
+                Some(&RistrettoPoint::random(&mut OsRng))
+            )
+            .unwrap_err(),
             ProofError::VerificationFailed
         );
 
         // Check error if index out of bounds
         assert_eq!(
-            set.iter()
-                .prove_with_offset(&gens, &mut t.clone(), gens.max_set_size(), &r, Some(&C_new))
+            set.prove_with_offset(&gens, &mut t.clone(), gens.max_set_size(), &r, Some(&C_new))
                 .unwrap_err(),
             ProofError::IndexOutOfBounds
         );
@@ -998,20 +982,17 @@ mod tests {
         // Prove should fail if set too small or too large
         let removed = set.pop().unwrap();
         assert_eq!(
-            set.iter()
-                .prove_with_offset(&gens, &mut t.clone(), l, &r, Some(&C_new))
+            set.prove_with_offset(&gens, &mut t.clone(), l, &r, Some(&C_new))
                 .unwrap_err(),
             ProofError::SetIsTooSmall
         );
         set.push(RistrettoPoint::random(&mut OsRng));
         assert!(set
-            .iter()
             .prove_with_offset(&gens, &mut t.clone(), l, &r, Some(&C_new))
             .is_ok()); // Ok!
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter()
-                .prove_with_offset(&gens, &mut t.clone(), l, &r, Some(&C_new))
+            set.prove_with_offset(&gens, &mut t.clone(), l, &r, Some(&C_new))
                 .unwrap_err(),
             ProofError::SetIsTooLarge
         );
@@ -1024,22 +1005,19 @@ mod tests {
         // Verify should fail if set has been modified
         let removed = set.pop().unwrap();
         assert_eq!(
-            set.iter()
-                .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
+            set.verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
                 .unwrap_err(),
             ProofError::SetIsTooSmall
         );
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter()
-                .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
+            set.verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
                 .unwrap_err(),
             ProofError::VerificationFailed
         );
         set.push(RistrettoPoint::random(&mut OsRng));
         assert_eq!(
-            set.iter()
-                .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
+            set.verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
                 .unwrap_err(),
             ProofError::SetIsTooLarge
         );
@@ -1078,14 +1056,12 @@ mod tests {
         let mut offsets = Vec::new();
         for _ in 0..10 {
             proofs.push(
-                set.iter()
-                    .prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new))
+                set.prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new))
                     .unwrap(),
             );
             offsets.push(Some(&C_new));
         }
         assert!(set
-            .iter()
             .verify_batch_with_offsets(&gens, &mut t.clone(), &proofs, &offsets)
             .is_ok());
 
@@ -1097,12 +1073,9 @@ mod tests {
         // Now verify batch without offsets
         let mut proofs = Vec::new();
         for _ in 0..10 {
-            proofs.push(set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap());
+            proofs.push(set.prove(&gens, &mut t.clone(), l, &r).unwrap());
         }
-        assert!(set
-            .iter()
-            .verify_batch(&gens, &mut t.clone(), &proofs)
-            .is_ok());
+        assert!(set.verify_batch(&gens, &mut t.clone(), &proofs).is_ok());
     }
 
     #[test]
@@ -1133,8 +1106,7 @@ mod tests {
         let mut offsets = Vec::new();
         for _ in 0..10 {
             proofs.push(
-                set.iter()
-                    .prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new))
+                set.prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new))
                     .unwrap(),
             );
             offsets.push(Some(&C_new));
@@ -1142,7 +1114,6 @@ mod tests {
         let serialized = serde_cbor::to_vec(&proofs).unwrap();
         let proofs: Vec<OneOfManyProof> = serde_cbor::from_slice(&serialized[..]).unwrap();
         assert!(set
-            .iter()
             .verify_batch_with_offsets(&gens, &mut t.clone(), &proofs, &offsets)
             .is_ok());
 
@@ -1154,13 +1125,10 @@ mod tests {
         // Now verify batch without offsets
         let mut proofs = Vec::new();
         for _ in 0..10 {
-            proofs.push(set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap());
+            proofs.push(set.prove(&gens, &mut t.clone(), l, &r).unwrap());
         }
         let serialized = serde_cbor::to_vec(&proofs).unwrap();
         let proofs: Vec<OneOfManyProof> = serde_cbor::from_slice(&serialized[..]).unwrap();
-        assert!(set
-            .iter()
-            .verify_batch(&gens, &mut t.clone(), &proofs)
-            .is_ok());
+        assert!(set.verify_batch(&gens, &mut t.clone(), &proofs).is_ok());
     }
 }

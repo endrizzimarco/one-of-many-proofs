@@ -31,11 +31,10 @@
 //!
 //! // Compute a `OneOfMany` membership proof for this commitment
 //! let mut t = Transcript::new(b"OneOfMany-Test");
-//! let proof = set.iter().prove(&gens, &mut t.clone(), l, &r).unwrap();
+//! let proof = set.prove(&gens, &mut t.clone(), l, &r).unwrap();
 //!
 //! // Verify this membership proof, without any knowledge of `l` or `r`.
 //! assert!(set
-//!     .iter()
 //!     .verify(&gens, &mut t.clone(), &proof)
 //!     .is_ok());
 //! ```
@@ -69,11 +68,10 @@
 //!
 //! // Compute a `OneOfMany` membership proof for this commitment
 //! let mut t = Transcript::new(b"OneOfMany-Test");
-//! let proof = set.iter().prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
+//! let proof = set.prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
 //!
 //! // Verify this membership proof, without any knowledge of `l` or `r`.
 //! assert!(set
-//!     .iter()
 //!     .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
 //!     .is_ok());
 //! ```
@@ -115,14 +113,13 @@
 //! t.append_message(b"msg", b"Hello, World!");
 //!
 //! // Sign the message anonymously
-//! let proof = set.iter().prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
+//! let proof = set.prove_with_offset(&gens, &mut t.clone(), l, &(r - r_new), Some(&C_new)).unwrap();
 //!
 //! // Compute a `OneOfMany` membership proof for this commitment
 //! let mut t = Transcript::new(b"OneOfMany-Test");
 //!
 //! // Verification will fail, because this transcript doesn't commit to the same message
 //! assert!(set
-//!     .iter()
 //!     .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
 //!     .is_err());
 //!
@@ -131,7 +128,6 @@
 //!
 //!  // Verification will now succeed, because this transcript commits to the signed message
 //! assert!(set
-//!     .iter()
 //!     .verify_with_offset(&gens, &mut t.clone(), &proof, Some(&C_new))
 //!     .is_ok());
 //! ```
@@ -182,5 +178,4 @@ pub mod proofs;
 //-----------------------------------------------------------------------------
 // Internal modules
 //-----------------------------------------------------------------------------
-pub(crate) mod gray_code;
 pub(crate) mod transcript;

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
 use std::fmt;
 
-const N: usize = 4;
+const N: usize = 2;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -553,28 +553,35 @@ where
             }
         }
 
-        let mut G_k = Polynomial::from(
+        let G_k = Polynomial::from(
             rho_k
                 .iter()
                 .map(|rho| gens.commit(&Scalar::zero(), rho).unwrap())
                 .collect::<Vec<RistrettoPoint>>(),
         );
-        let mut i = 0;
-        // why is this clone needed?
-        self.clone()
+
+        let points_minus_offset = self
+            .clone()
             .map(|&C_i| if let Some(O) = offset { C_i - O } else { C_i })
-            .for_each(|C_i| {
-                let p_i = compute_p_i(i, l, &a_j_i);
-                p_i.iter().enumerate().for_each(|(k, p)| {
-                    G_k[k] += p * C_i;
-                });
-                i += 1;
-            });
-        if i < gens.max_set_size() {
+            .collect::<Vec<RistrettoPoint>>();
+
+        let p_i_k = (0..gens.max_set_size())
+            .map(|i| compute_p_i(i, l, &a_j_i))
+            .collect::<Vec<Vec<Scalar>>>();
+        if p_i_k.len() < gens.max_set_size() {
             return Err(ProofError::SetIsTooSmall);
-        } else if i > gens.max_set_size() {
+        } else if p_i_k.len() > gens.max_set_size() {
             return Err(ProofError::SetIsTooLarge);
         }
+        let p_k_i = transpose(&p_i_k);
+
+        // I need the underlying vector but the library doesn't provide a method for that....
+        let mut G_k = G_k.iter().map(|el| *el).collect::<Vec<RistrettoPoint>>();
+        G_k.par_iter_mut().enumerate().for_each(|(k, coeff)| {
+            *coeff += RistrettoPoint::multiscalar_mul(&p_k_i[k], &points_minus_offset);
+        });
+        // Back to a polynomial...
+        let G_k = Polynomial::from(G_k);
         for k in 0..gens.n_bits - 1 {
             transcript.validate_and_append_point(b"G_k", &G_k[k].compress())?;
         }
@@ -755,6 +762,19 @@ fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
     let mut v: Vec<Scalar> = p.into();
     v.resize_with(n_bits, || Scalar::zero());
     v
+}
+
+fn transpose(matrix: &Vec<Vec<Scalar>>) -> Vec<Vec<Scalar>> {
+    let rows = matrix.len();
+    let cols = matrix[0].len();
+    let mut transposed_matrix = vec![vec![Scalar::zero(); rows]; cols];
+
+    for i in 0..rows {
+        for j in 0..cols {
+            transposed_matrix[j][i] = matrix[i][j];
+        }
+    }
+    transposed_matrix
 }
 
 fn scalar_exp(base: Scalar, exp: usize) -> Scalar {

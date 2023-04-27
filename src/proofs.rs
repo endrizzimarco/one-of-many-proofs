@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
 use std::fmt;
 
-const N: usize = 2;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -33,10 +32,10 @@ impl fmt::Debug for RistrettoBasepointTableWrapper {
 
 /// A collection of generator points that can be used to compute various proofs
 /// in this module. To create an instance of [`ProofGens`] it is recommended to
-/// call ProofGens::new(`n`), where `n` is the number of bits to be used in
-/// proofs and verifications.
+/// call ProofGens::new(`n`, `m`), to create a proof for a set N = n^m coins
 #[derive(Debug, Clone)]
 pub struct ProofGens {
+    pub n_base: usize,
     pub n_bits: usize,
     G: RistrettoBasepointTableWrapper,
     H: Vec<RistrettoPoint>,
@@ -75,9 +74,9 @@ impl ProofGens {
     /// ```
     /// # use one_of_many_proofs::proofs::ProofGens;
     /// // Support 10 bit membership proofs
-    /// let gens = ProofGens::new(10);
+    /// let gens = ProofGens::new(2, 10);
     /// ```
-    pub fn new(n_bits: usize) -> ProofResult<ProofGens> {
+    pub fn new(n_base: usize, n_bits: usize) -> ProofResult<ProofGens> {
         if n_bits <= 1 {
             return Err(ProofError::SetIsTooSmall);
         }
@@ -96,14 +95,15 @@ impl ProofGens {
         //  .           .
         // H[2n-1] = hash(H[2n-2])
         let mut gens = ProofGens {
+            n_base,
             n_bits,
             G: RistrettoBasepointTableWrapper(constants::RISTRETTO_BASEPOINT_TABLE),
-            H: Vec::with_capacity(N * n_bits),
+            H: Vec::with_capacity(n_base * n_bits),
         };
         gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
             gens.G.0.basepoint().compress().as_bytes(),
         ));
-        for i in 1..(N * n_bits) {
+        for i in 1..(n_base * n_bits) {
             gens.H.push(RistrettoPoint::hash_from_bytes::<Sha3_512>(
                 gens.H[i - 1].compress().as_bytes(),
             ));
@@ -116,7 +116,7 @@ impl ProofGens {
     /// proofs over a set with at most `2^10 = 1024` members. Note, proofs over
     /// smaller sets will be extended by repeating the first member.
     pub fn max_set_size(&self) -> usize {
-        N.checked_pow(self.n_bits as u32).unwrap()
+        self.n_base.checked_pow(self.n_bits as u32).unwrap()
     }
 
     /// Create a pedersen commitment, with value `v` and blinding factor `r`.
@@ -140,7 +140,7 @@ impl ProofGens {
     /// # use curve25519_dalek::scalar::Scalar;
     /// # use merlin::Transcript;
     /// // Compute the generators necessary for 5 bit proofs
-    /// let gens = ProofGens::new(5).unwrap();
+    /// let gens = ProofGens::new(2, 5).unwrap();
     /// let l = 7; // Some index within the range 0 <= `l` <= 2^5
     ///
     /// // The proof requires us to provide random noise values. For secure
@@ -182,10 +182,10 @@ impl ProofGens {
             builder.finalize(&mut thread_rng())
         };
 
-        let b_j_i = (0..N)
+        let b_j_i = (0..self.n_base)
             .map(|i| {
                 (0..self.n_bits)
-                    .map(|j| Scalar::from(delta(bit(l, j, N), i) as u32))
+                    .map(|j| Scalar::from(delta(bit(l, j, self.n_base), i) as u32))
                     .collect()
             })
             .collect::<Vec<Vec<Scalar>>>();
@@ -195,7 +195,7 @@ impl ProofGens {
         let r_C = Scalar::random(&mut rng);
         let r_D = Scalar::random(&mut rng);
 
-        let mut a_j_i = vec![vec![Scalar::default(); self.n_bits]; N];
+        let mut a_j_i = vec![vec![Scalar::default(); self.n_bits]; self.n_base];
         for j in 0..self.n_bits {
             a_j_i[0][j] = -a_j_1.iter().map(|a| a[j]).sum::<Scalar>();
             for i in 0..a_j_1.len() {
@@ -262,7 +262,7 @@ impl ProofGens {
     /// # use one_of_many_proofs::proofs::ProofGens;
     /// # use curve25519_dalek::scalar::Scalar;
     /// # use merlin::Transcript;
-    /// # let gens = ProofGens::new(5).unwrap();
+    /// # let gens = ProofGens::new(2, 5).unwrap();
     /// # let l = 7; // Some index within the range 0 <= `l` <= 2^5
     /// # let a_j = (0..1)
     /// # .map(|_| {
@@ -318,7 +318,7 @@ impl ProofGens {
 
         // Inflate f1_j to include reconstructed f_j vector
         let f_j_1 = &proof.f_j_1;
-        let mut f_j_i = vec![vec![Scalar::default(); self.n_bits]; N];
+        let mut f_j_i = vec![vec![Scalar::default(); self.n_bits]; self.n_base];
         for j in 0..self.n_bits {
             f_j_i[0][j] = x - f_j_1.iter().map(|f| f[j]).sum::<Scalar>();
             for i in 0..f_j_1.len() {
@@ -364,7 +364,7 @@ pub trait OneOfManyProofs {
     //! # use merlin::Transcript;
     //! #
     //! // Set up proof generators
-    //! let gens = ProofGens::new(5).unwrap();
+    //! let gens = ProofGens::new(2, 5).unwrap();
     //!
     //! // Create the prover's commitment to zero
     //! let l: usize = 3; // The prover's commitment will be third in the set
@@ -415,7 +415,7 @@ pub trait OneOfManyProofs {
     //! # use merlin::Transcript;
     //! #
     //! // Set up proof generators
-    //! let gens = ProofGens::new(5).unwrap();
+    //! let gens = ProofGens::new(2, 5).unwrap();
     //!
     //! // Create the prover's commitment to a random value
     //! let l: usize = 3; // The prover's commitment will be third in the set
@@ -549,11 +549,11 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
         let rho_k = (0..gens.n_bits)
             .map(|_| Scalar::random(&mut rng))
             .collect::<Vec<Scalar>>();
-        let a_j_1 = (0..N - 1)
+        let a_j_1 = (0..gens.n_base - 1)
             .map(|_| (0..gens.n_bits).map(|_| Scalar::random(&mut rng)).collect())
             .collect::<Vec<Vec<Scalar>>>();
 
-        let mut a_j_i = vec![vec![Scalar::default(); gens.n_bits]; N];
+        let mut a_j_i = vec![vec![Scalar::default(); gens.n_bits]; gens.n_base];
         for j in 0..gens.n_bits {
             a_j_i[0][j] = -a_j_1.iter().map(|a| a[j]).sum::<Scalar>();
             for i in 0..a_j_1.len() {
@@ -644,14 +644,15 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
             .collect::<Result<Vec<_>, _>>()?;
 
         // create 3d array: [proof, n, m] <- this is a cry for help
-        let mut f_p_j_i = vec![
-            vec![vec![Scalar::default(); proofs[0].bit_proof.f_j_1[0].len()]; N];
-            proofs.len()
-        ];
+        let mut f_p_j_i =
+            vec![
+                vec![vec![Scalar::default(); proofs[0].bit_proof.f_j_1[0].len()]; gens.n_base];
+                proofs.len()
+            ];
         for k in 0..proofs.len() {
             // Inflate f1_j to include reconstructed f_j vector
             let f_j_1 = &proofs[k].bit_proof.f_j_1;
-            let mut f_j_i = vec![vec![Scalar::default(); f_j_1[0].len()]; N];
+            let mut f_j_i = vec![vec![Scalar::default(); f_j_1[0].len()]; gens.n_base];
             for j in 0..f_j_1[0].len() {
                 f_j_i[0][j] = x_vec[k] - f_j_1.iter().map(|f| f[j]).sum::<Scalar>();
                 for i in 0..f_j_1.len() {
@@ -671,7 +672,7 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
                     .enumerate()
                     .map(|(p, _)| {
                         (0..gens.n_bits)
-                            .map(|j| f_p_j_i[p][bit(i, j, N)][j])
+                            .map(|j| f_p_j_i[p][bit(i, j, gens.n_base)][j])
                             .product::<Scalar>()
                     })
                     .collect::<Vec<Scalar>>()
@@ -762,8 +763,8 @@ where
 }
 
 fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
-    assert!(a_j_i.len() == N); // Must have two rows of random scalars
     assert!(a_j_i[0].len() == a_j_i[1].len()); // Make sure each row is the same length
+    let n_base = a_j_i.len();
     let n_bits = a_j_i[0].len();
 
     // Create polynomial vector
@@ -773,8 +774,8 @@ fn compute_p_i(i: usize, l: usize, a_j_i: &Vec<Vec<Scalar>>) -> Vec<Scalar> {
     // Multiply each polynomial
     for j in 0..n_bits {
         let mut f = Polynomial::new();
-        f.push(a_j_i[bit(i, j, N)][j]);
-        if 0 != delta(bit(l, j, N), bit(i, j, N)) {
+        f.push(a_j_i[bit(i, j, n_base)][j]);
+        if 0 != delta(bit(l, j, n_base), bit(i, j, n_base)) {
             f.push(Scalar::one());
         }
         p *= f;
@@ -830,13 +831,16 @@ mod tests {
 
     #[test]
     fn new_generators() {
-        assert!(ProofGens::new(5).is_ok());
-        assert_eq!(ProofGens::new(0).unwrap_err(), ProofError::SetIsTooSmall);
-        assert_eq!(ProofGens::new(1).unwrap_err(), ProofError::SetIsTooSmall);
-        assert!(ProofGens::new(32).is_ok());
-        assert_eq!(ProofGens::new(33).unwrap_err(), ProofError::SetIsTooLarge);
+        assert!(ProofGens::new(2, 5).is_ok());
+        assert_eq!(ProofGens::new(2, 0).unwrap_err(), ProofError::SetIsTooSmall);
+        assert_eq!(ProofGens::new(2, 1).unwrap_err(), ProofError::SetIsTooSmall);
+        assert!(ProofGens::new(2, 32).is_ok());
         assert_eq!(
-            ProofGens::new(0xffffffff).unwrap_err(),
+            ProofGens::new(2, 33).unwrap_err(),
+            ProofError::SetIsTooLarge
+        );
+        assert_eq!(
+            ProofGens::new(2, 0xffffffff).unwrap_err(),
             ProofError::SetIsTooLarge
         );
     }
@@ -844,13 +848,13 @@ mod tests {
     #[test]
     fn bit_commitments() {
         // Set up proof generators
-        let gens = ProofGens::new(5).unwrap();
+        let gens = ProofGens::new(2, 5).unwrap();
 
         // Create the prover's commitment to zero
         let l: usize = 3; // The prover's commitment will be third in the set
         let t = Transcript::new(b"OneOfMany-Test");
 
-        let a_j_1 = (0..N - 1)
+        let a_j_1 = (0..2 - 1)
             .map(|_| {
                 (0..gens.n_bits)
                     .map(|_| Scalar::random(&mut OsRng))
@@ -873,7 +877,7 @@ mod tests {
     #[test]
     fn prove_single() {
         // Set up proof generators
-        let gens = ProofGens::new(5).unwrap();
+        let gens = ProofGens::new(2, 5).unwrap();
 
         // Create the prover's commitment to zero
         let l: usize = 3; // The prover's commitment will be third in the set
@@ -944,7 +948,7 @@ mod tests {
     #[test]
     fn prove_single_with_offset() {
         // Set up proof generators
-        let gens = ProofGens::new(5).unwrap();
+        let gens = ProofGens::new(2, 5).unwrap();
 
         // Create the prover's commitment to zero
         let l: usize = 3; // The prover's commitment will be third in the set
@@ -1056,7 +1060,7 @@ mod tests {
     #[test]
     fn prove_batch() {
         // Set up proof generators
-        let gens = ProofGens::new(5).unwrap();
+        let gens = ProofGens::new(2, 5).unwrap();
 
         // Create the prover's commitment to zero
         let l: usize = 3; // The prover's commitment will be third in the set
@@ -1106,7 +1110,7 @@ mod tests {
     #[test]
     fn serde() {
         // Set up proof generators
-        let gens = ProofGens::new(5).unwrap();
+        let gens = ProofGens::new(2, 5).unwrap();
 
         // Create the prover's commitment to zero
         let l: usize = 3; // The prover's commitment will be third in the set

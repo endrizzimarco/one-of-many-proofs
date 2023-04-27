@@ -15,7 +15,7 @@
 //! # use merlin::Transcript;
 //! #
 //! // Set up proof generators
-//! let gens = ProofGens::new(5).unwrap();
+//! let gens = ProofGens::new(2, 5).unwrap();
 //!
 //! // Create the prover's commitment to zero
 //! let l: usize = 3; // The prover's commitment will be third in the set
@@ -48,7 +48,7 @@
 //! # use merlin::Transcript;
 //! #
 //! // Set up proof generators
-//! let gens = ProofGens::new(5).unwrap();
+//! let gens = ProofGens::new(2, 5).unwrap();
 //!
 //! // Create the prover's commitment to zero
 //! let l: usize = 3; // The prover's commitment will be third in the set
@@ -88,7 +88,7 @@
 //! # use merlin::Transcript;
 //! #
 //! // Set up proof generators
-//! let gens = ProofGens::new(5).unwrap();
+//! let gens = ProofGens::new(2, 5).unwrap();
 //!
 //! // Create the prover's commitment to zero
 //! let l: usize = 3; // The signer's commitment will be third in the set

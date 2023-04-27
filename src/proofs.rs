@@ -5,7 +5,7 @@ use core::iter::Iterator;
 use core::ops::Mul;
 use core::slice;
 use curve25519_dalek::constants;
-use curve25519_dalek::ristretto::{RistrettoBasepointTable, RistrettoPoint};
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoBasepointTable, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{IsIdentity, MultiscalarMul};
 use merlin::Transcript;
@@ -47,12 +47,12 @@ pub struct ProofGens {
 /// the openings of commitments to a sequence of bits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitProof {
-    A: RistrettoPoint,
-    C: RistrettoPoint,
-    D: RistrettoPoint,
-    f_j_1: Vec<Vec<Scalar>>,
-    z_A: Scalar,
-    z_C: Scalar,
+    pub A: CompressedRistretto,
+    pub C: CompressedRistretto,
+    pub D: CompressedRistretto,
+    pub f_j_1: Vec<Vec<Scalar>>,
+    pub z_A: Scalar,
+    pub z_C: Scalar,
 }
 
 /// A zero knowledge proof of membership in a set. A prover can convince a
@@ -62,10 +62,10 @@ pub struct BitProof {
 /// within the set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneOfManyProof {
-    B: RistrettoPoint,
-    bit_proof: BitProof,
-    G_k: Polynomial<RistrettoPoint>,
-    z: Scalar,
+    pub B: CompressedRistretto,
+    pub bit_proof: BitProof,
+    pub G_k: Polynomial<CompressedRistretto>,
+    pub z: Scalar,
 }
 
 impl ProofGens {
@@ -162,7 +162,7 @@ impl ProofGens {
         transcript: &mut Transcript,
         l: usize,
         a_j_1: &Vec<Vec<Scalar>>,
-    ) -> ProofResult<(RistrettoPoint, BitProof, Scalar)> {
+    ) -> ProofResult<(CompressedRistretto, BitProof, Scalar)> {
         if l >= self.max_set_size() {
             return Err(ProofError::IndexOutOfBounds);
         }
@@ -202,20 +202,26 @@ impl ProofGens {
                 a_j_i[i + 1][j] = a_j_1[i][j];
             }
         }
-        let A = a_j_i.iter().flatten().commit(&self, &r_A)?;
-        let B = b_j_i.iter().flatten().commit(&self, &r_B)?;
+        let A = a_j_i.iter().flatten().commit(&self, &r_A)?.compress();
+        let B = b_j_i.iter().flatten().commit(&self, &r_B)?.compress();
         let C = a_j_i
             .iter()
             .flatten()
             .zip(b_j_i.iter().flatten())
             .map(|(a, b)| a * (Scalar::one() - Scalar::from(2u32) * b))
-            .commit(&self, &r_C)?;
-        let D = a_j_i.iter().flatten().map(|a| -a * a).commit(&self, &r_D)?;
+            .commit(&self, &r_C)?
+            .compress();
+        let D = a_j_i
+            .iter()
+            .flatten()
+            .map(|a| -a * a)
+            .commit(&self, &r_D)?
+            .compress();
 
-        transcript.validate_and_append_point(b"A", &A.compress())?;
-        transcript.validate_and_append_point(b"B", &B.compress())?;
-        transcript.validate_and_append_point(b"C", &C.compress())?;
-        transcript.validate_and_append_point(b"D", &D.compress())?;
+        transcript.validate_and_append_point(b"A", &A)?;
+        transcript.validate_and_append_point(b"B", &B)?;
+        transcript.validate_and_append_point(b"C", &C)?;
+        transcript.validate_and_append_point(b"D", &D)?;
 
         let x = transcript.challenge_scalar(b"bit-proof-challenge");
 
@@ -274,15 +280,15 @@ impl ProofGens {
     pub fn verify_bits(
         &self,
         transcript: &mut Transcript,
-        B: &RistrettoPoint,
+        B: &CompressedRistretto,
         proof: &BitProof,
     ) -> ProofResult<Scalar> {
         transcript.bit_proof_domain_sep(self.n_bits as u64);
 
-        transcript.validate_and_append_point(b"A", &proof.A.compress())?;
-        transcript.validate_and_append_point(b"B", &B.compress())?;
-        transcript.validate_and_append_point(b"C", &proof.C.compress())?;
-        transcript.validate_and_append_point(b"D", &proof.D.compress())?;
+        transcript.validate_and_append_point(b"A", &proof.A)?;
+        transcript.validate_and_append_point(b"B", &B)?;
+        transcript.validate_and_append_point(b"C", &proof.C)?;
+        transcript.validate_and_append_point(b"D", &proof.D)?;
 
         let x = transcript.challenge_scalar(b"bit-proof-challenge");
 
@@ -321,7 +327,9 @@ impl ProofGens {
         }
 
         // Verify relation R1
-        if x * B + proof.A != f_j_i.iter().flatten().commit(&self, &proof.z_A)? {
+        if x * B.decompress().unwrap() + proof.A.decompress().unwrap()
+            != f_j_i.iter().flatten().commit(&self, &proof.z_A)?
+        {
             return Err(ProofError::VerificationFailed);
         }
         let r1 = f_j_i
@@ -329,7 +337,7 @@ impl ProofGens {
             .map(|f_j| f_j.iter().map(|f| f * (x - f)))
             .flatten()
             .commit(&self, &proof.z_C)?;
-        if x * proof.C + proof.D != r1 {
+        if x * proof.C.decompress().unwrap() + proof.D.decompress().unwrap() != r1 {
             return Err(ProofError::VerificationFailed);
         }
         Ok(x)
@@ -580,10 +588,16 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
         G_k.par_iter_mut().enumerate().for_each(|(k, coeff)| {
             *coeff += RistrettoPoint::multiscalar_mul(&p_k_i[k], &points_minus_offset);
         });
+        // Compress the points to save space
+        let compressed_G_k = G_k
+            .iter()
+            .map(|el| el.compress())
+            .collect::<Vec<CompressedRistretto>>();
         // Back to a polynomial...
-        let G_k = Polynomial::from(G_k);
+        let G_k = Polynomial::from(compressed_G_k);
+
         for k in 0..gens.n_bits - 1 {
-            transcript.validate_and_append_point(b"G_k", &G_k[k].compress())?;
+            transcript.validate_and_append_point(b"G_k", &G_k[k])?;
         }
 
         let (B, bit_proof, x) = gens.commit_bits(&mut transcript.clone(), l, &a_j_1)?;
@@ -623,7 +637,7 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
 
                 let mut t = transcript.clone();
                 for k in 0..gens.n_bits - 1 {
-                    t.validate_and_append_point(b"G_k", &p.G_k[k].compress())?;
+                    t.validate_and_append_point(b"G_k", &p.G_k[k])?;
                 }
                 gens.verify_bits(&mut t, &p.B, &p.bit_proof)
             })
@@ -695,12 +709,23 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
             return Err(ProofError::SetIsTooLarge);
         }
 
+        // decompress points in G_k polnyomial... ugly sight...
+        let G_k_vec = proofs
+            .iter()
+            .map(|p| {
+                p.G_k
+                    .iter()
+                    .map(|point| point.decompress().unwrap())
+                    .collect::<Vec<RistrettoPoint>>()
+            })
+            .collect::<Vec<Vec<RistrettoPoint>>>();
+
         let C = RistrettoPoint::multiscalar_mul(horizontal_sum, self);
         let E = gens.commit(&Scalar::zero(), &proofs.iter().map(|p| p.z).sum())?;
-        let G = proofs
+        let G = G_k_vec
             .iter()
             .zip(x_vec.iter())
-            .map(|(p, &x)| p.G_k.eval(x).unwrap())
+            .map(|(G_k, &x)| Polynomial::from(G_k.clone()).eval(x).unwrap())
             .sum::<RistrettoPoint>();
         if C.is_identity() || E.is_identity() || G.is_identity() {
             return Err(ProofError::VerificationFailed);

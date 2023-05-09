@@ -697,9 +697,7 @@ impl OneOfManyProofs for Vec<RistrettoPoint> {
         let O = offsets
             .iter()
             .filter_map(|O| if let Some(O) = O { Some(O) } else { None })
-            .map(|&O| O)
-            .collect::<Vec<_>>()
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(k, &O)| O * vertical_sum[k])
             .sum::<RistrettoPoint>();

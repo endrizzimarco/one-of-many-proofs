@@ -14,12 +14,12 @@ rayon = "1.7.0"
 
 [dependencies.curve25519-dalek]
 default-features = false
-version = "3"
+version = "2.1.3"
 features = ["simd_backend", "nightly", "serde", "alloc"]
 
 [dependencies.sha3]
 default-features = false
-version = "0.9"
+version = "0.8"
 
 [dependencies.merlin]
 default-features = false
